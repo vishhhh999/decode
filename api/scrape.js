@@ -7,8 +7,14 @@ const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
 const BL = 'https://chrome.browserless.io'
 
-// Real Chrome UA — bypasses most bot-detection on Behance, Dribbble etc.
-const CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+// Stealth script injected to mask headless signals — addScriptTag is a valid Browserless field
+const STEALTH_SCRIPT = {
+  content: [
+    'Object.defineProperty(navigator, "webdriver", { get: () => undefined });',
+    'Object.defineProperty(navigator, "plugins", { get: () => [1,2,3] });',
+    'window.chrome = { runtime: {} };',
+  ].join('\n')
+}
 
 // ─── URL type detection ────────────────────────────────────────────────────────
 function getUrlType(url) {
@@ -44,7 +50,7 @@ async function blFetch(endpoint, body) {
 function makeContentBody(url) {
   return {
     url,
-    userAgent: CHROME_UA,
+    addScriptTag: [STEALTH_SCRIPT],
     gotoOptions: { waitUntil: 'domcontentloaded', timeout: 25000 },
     waitForTimeout: 2000,
   }
@@ -53,7 +59,7 @@ function makeContentBody(url) {
 function makeScreenshotBody(url) {
   return {
     url,
-    userAgent: CHROME_UA,
+    addScriptTag: [STEALTH_SCRIPT],
     gotoOptions: { waitUntil: 'networkidle2', timeout: 25000 },
     waitForTimeout: 3000,
     viewport: { width: 1440, height: 900, deviceScaleFactor: 1 },
