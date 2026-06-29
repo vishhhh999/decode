@@ -1,69 +1,33 @@
 // api/scrape.js — Vercel serverless function
-// Routes by URL type: brand website vs Behance vs Dribbble
+// Routes: brand website → CSS extraction | Behance/Dribbble → screenshot + Vision
 
 export const config = { maxDuration: 60 }
 
 const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
+const BL = 'https://chrome.browserless.io'
+
+// Real Chrome UA — bypasses most bot-detection on Behance, Dribbble etc.
+const CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
 // ─── URL type detection ────────────────────────────────────────────────────────
 function getUrlType(url) {
   const { hostname, pathname } = new URL(url)
   const host = hostname.replace(/^www\./, '')
+  const parts = pathname.split('/').filter(Boolean)
 
   if (host === 'behance.net' || host.endsWith('.behance.net')) {
-    const parts = pathname.split('/').filter(Boolean)
-    if (parts[0] === 'gallery') return { type: 'behance-project', platform: 'behance' }
-    return { type: 'behance-profile', platform: 'behance' }
+    return { type: parts[0] === 'gallery' ? 'behance-project' : 'behance-profile', platform: 'behance' }
   }
-
   if (host === 'dribbble.com' || host.endsWith('.dribbble.com')) {
-    const parts = pathname.split('/').filter(Boolean)
-    if (parts[0] === 'shots') return { type: 'dribbble-shot', platform: 'dribbble' }
-    return { type: 'dribbble-profile', platform: 'dribbble' }
+    return { type: parts[0] === 'shots' ? 'dribbble-shot' : 'dribbble-profile', platform: 'dribbble' }
   }
-
   return { type: 'website', platform: null }
 }
 
-// ─── Minimal valid Browserless /content body ──────────────────────────────────
-// Browserless uses a STRICT JSON schema — any unrecognised field = 400.
-// Only these top-level keys are valid: url, html, gotoOptions, waitForEvent,
-// waitForFunction, waitForSelector, waitForTimeout, cookies, authenticate,
-// addScriptTag, addStyleTag, rejectRequestPattern, requestInterceptors,
-// userAgent, viewport, bestAttempt, headless, ignoreHTTPSErrors, slowMo.
-// NO "waitFor" (number), NO "setJavaScriptEnabled".
-
-function contentBody(url) {
-  return {
-    url,
-    gotoOptions: {
-      waitUntil: 'domcontentloaded',
-      timeout: 25000,
-    },
-    waitForTimeout: 2000,
-  }
-}
-
-function screenshotBody(url) {
-  return {
-    url,
-    gotoOptions: {
-      waitUntil: 'networkidle2',
-      timeout: 25000,
-    },
-    waitForTimeout: 2500,
-    viewport: {
-      width: 1440,
-      height: 900,
-      deviceScaleFactor: 1,
-    },
-  }
-}
-
-const BL = `https://chrome.browserless.io`
-
+// ─── Browserless fetch wrapper ────────────────────────────────────────────────
 async function blFetch(endpoint, body) {
+  if (!BROWSERLESS_TOKEN) throw new Error('BROWSERLESS_TOKEN environment variable is not set')
   const res = await fetch(`${BL}/${endpoint}?token=${BROWSERLESS_TOKEN}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -76,19 +40,48 @@ async function blFetch(endpoint, body) {
   return res
 }
 
-// ─── Behance / Dribbble: screenshot → Claude Vision ──────────────────────────
-async function screenshotAndAnalyze(url) {
-  if (!BROWSERLESS_TOKEN) throw new Error('BROWSERLESS_TOKEN not set')
+// ─── Body builders (only valid Browserless schema fields) ────────────────────
+function makeContentBody(url) {
+  return {
+    url,
+    userAgent: CHROME_UA,
+    gotoOptions: { waitUntil: 'domcontentloaded', timeout: 25000 },
+    waitForTimeout: 2000,
+  }
+}
 
-  // Screenshot → raw PNG bytes
-  const ssRes = await blFetch('screenshot', screenshotBody(url))
+function makeScreenshotBody(url) {
+  return {
+    url,
+    userAgent: CHROME_UA,
+    gotoOptions: { waitUntil: 'networkidle2', timeout: 25000 },
+    waitForTimeout: 3000,
+    viewport: { width: 1440, height: 900, deviceScaleFactor: 1 },
+  }
+}
+
+// ─── Behance / Dribbble: screenshot → validate → Claude Vision ───────────────
+async function handlePlatformUrl(url, urlTypeInfo) {
+  // 1. Screenshot
+  const ssRes = await blFetch('screenshot', makeScreenshotBody(url))
   const ssBuffer = await ssRes.arrayBuffer()
+  const bytes = ssBuffer.byteLength
+
+  // If image is tiny (<5KB) it's almost certainly an error/login page
+  if (bytes < 5000) {
+    throw new Error(
+      `The page returned a blank or error screen (image too small: ${bytes} bytes). ` +
+      `This usually means the project is private, requires login, or the platform blocked access. ` +
+      `Try a public portfolio profile URL instead (e.g. behance.net/username).`
+    )
+  }
+
   const base64Screenshot = Buffer.from(ssBuffer).toString('base64')
 
-  // HTML content for title/description context (best-effort, non-fatal)
+  // 2. Page text context (non-fatal)
   let pageContext = { title: '', bodyText: '' }
   try {
-    const htmlRes = await blFetch('content', contentBody(url))
+    const htmlRes = await blFetch('content', makeContentBody(url))
     const html = await htmlRes.text()
     const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i)
     pageContext.title = titleMatch ? titleMatch[1].trim() : ''
@@ -98,38 +91,86 @@ async function screenshotAndAnalyze(url) {
       .replace(/<[^>]+>/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
-      .slice(0, 2000)
+      .slice(0, 1500)
   } catch { /* non-fatal */ }
 
-  return { base64Screenshot, pageContext }
+  // 3. Quick Claude Vision check — is design work actually visible?
+  const checkPrompt = `Look at this screenshot. Answer with ONLY the JSON below, nothing else.
+Is this showing actual design work/portfolio content, or is it an error page, login wall, 
+access-denied page, or blank page with no design content visible?
+
+{"visible": true/false, "reason": "one sentence"}`
+
+  const checkResult = await callClaude(checkPrompt, true, base64Screenshot)
+  // checkResult might be raw text since it's not our usual JSON shape — handle both
+  let visible = true
+  let checkReason = ''
+  try {
+    const parsed = typeof checkResult === 'object' ? checkResult : JSON.parse(checkResult)
+    visible = parsed.visible !== false
+    checkReason = parsed.reason || ''
+  } catch { /* if parse fails, assume visible and proceed */ }
+
+  if (!visible) {
+    throw new Error(
+      `No design work visible in the screenshot: ${checkReason} ` +
+      `The URL may be private, require login, or be blocked. ` +
+      `Try a public profile URL (e.g. behance.net/username) instead of a specific project link.`
+    )
+  }
+
+  // 4. Full analysis
+  return analyzeVisualScreenshot(base64Screenshot, pageContext, url, urlTypeInfo)
 }
 
-// ─── Brand website: HTML → parse CSS tokens ───────────────────────────────────
-async function extractBrandStyles(url) {
-  if (!BROWSERLESS_TOKEN) throw new Error('BROWSERLESS_TOKEN not set')
-  const res = await blFetch('content', contentBody(url))
+// ─── Brand website: HTML → parse CSS → Claude ─────────────────────────────────
+async function handleWebsiteUrl(url) {
+  const homepageData = await scrapePageCss(url)
+
+  // Crawl 1-2 internal pages if time allows (sequential, non-fatal)
+  const internalPages = await crawlInternalPages(url)
+
+  const allData = { homepage: homepageData, internalPages, pagesScraped: 1 + internalPages.length }
+  const designSystem = await analyzeBrandWebsite(allData, url)
+  return { designSystem, pagesScraped: allData.pagesScraped, method: 'css-extraction' }
+}
+
+async function scrapePageCss(url) {
+  const res = await blFetch('content', makeContentBody(url))
   const html = await res.text()
   return parseHtmlForTokens(html, url)
 }
 
-// ─── Parse HTML for design tokens ─────────────────────────────────────────────
-function parseHtmlForTokens(html, url) {
-  // Pull all CSS text from <style> blocks
-  const styleBlocks = []
-  for (const m of html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)) {
-    styleBlocks.push(m[1])
+const INTERNAL_PATHS = ['/about', '/work', '/projects', '/pricing', '/services']
+
+async function crawlInternalPages(baseUrl) {
+  const results = []
+  const origin = new URL(baseUrl).origin
+  const deadline = Date.now() + 18000 // 18s budget
+
+  for (const path of INTERNAL_PATHS.slice(0, 2)) {
+    if (Date.now() > deadline) break
+    try {
+      results.push(await scrapePageCss(origin + path))
+    } catch { /* page doesn't exist, skip */ }
   }
+  return results
+}
+
+// ─── HTML → design token extraction ───────────────────────────────────────────
+function parseHtmlForTokens(html, url) {
+  const styleBlocks = []
+  for (const m of html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)) styleBlocks.push(m[1])
   const allCss = styleBlocks.join('\n')
 
-  // CSS custom properties
+  // CSS custom properties (most reliable source)
   const cssVars = {}
   for (const m of allCss.matchAll(/(--[\w-]+)\s*:\s*([^;}\n]+)/g)) {
-    const key = m[1].trim()
     const val = m[2].trim()
-    if (val && val.length < 100) cssVars[key] = val
+    if (val && val.length < 100) cssVars[m[1].trim()] = val
   }
 
-  // Hex colors
+  // Colors
   const colors = new Set()
   for (const m of allCss.matchAll(/#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/g)) {
     const h = m[1]
@@ -137,32 +178,29 @@ function parseHtmlForTokens(html, url) {
   }
   for (const m of allCss.matchAll(/rgba?\([^)]+\)/g)) colors.add(m[0])
 
-  // Fonts
+  // Fonts (skip generic fallbacks)
+  const SKIP = new Set(['sans-serif','serif','monospace','inherit','initial','unset','cursive','fantasy','system-ui','-apple-system'])
   const fonts = new Set()
-  const SKIP_FONTS = new Set(['sans-serif','serif','monospace','inherit','initial','unset','cursive','fantasy'])
   for (const m of allCss.matchAll(/font-family\s*:\s*([^;}\n]+)/gi)) {
     m[1].split(',').forEach(f => {
-      const clean = f.trim().replace(/['"]/g, '').trim()
-      if (clean && !SKIP_FONTS.has(clean.toLowerCase())) fonts.add(clean)
+      const c = f.trim().replace(/['"]/g, '').trim()
+      if (c && !SKIP.has(c.toLowerCase())) fonts.add(c)
     })
   }
 
-  // Font weights
+  // Font weights, sizes, radii, shadows
   const weights = new Set()
   for (const m of allCss.matchAll(/font-weight\s*:\s*(\d{3}|bold|normal)/gi)) weights.add(m[1])
 
-  // Font sizes
   const sizes = new Set()
   for (const m of allCss.matchAll(/font-size\s*:\s*(\d+(?:\.\d+)?(?:px|rem|em))/gi)) sizes.add(m[1])
 
-  // Border radii
   const radii = new Set()
   for (const m of allCss.matchAll(/border-radius\s*:\s*([^;}\n]+)/gi)) {
     const r = m[1].trim()
     if (r && r !== '0' && r !== '0px') radii.add(r)
   }
 
-  // Box shadows
   const shadows = new Set()
   for (const m of allCss.matchAll(/box-shadow\s*:\s*([^;}\n]+)/gi)) {
     const s = m[1].trim()
@@ -191,180 +229,153 @@ function parseHtmlForTokens(html, url) {
   }
 
   return {
-    cssVars,
-    colors: Array.from(colors).slice(0, 80),
-    fonts: Array.from(fonts).slice(0, 20),
-    fontWeights: Array.from(weights),
-    fontSizes: Array.from(sizes).slice(0, 20),
-    radii: Array.from(radii).slice(0, 20),
-    shadows: Array.from(shadows).slice(0, 10),
-    title,
-    metaDesc,
-    bodyText,
-    h1s: h1s.slice(0, 5),
-    pageUrl: url,
+    cssVars, colors: [...colors].slice(0, 80),
+    fonts: [...fonts].slice(0, 20), fontWeights: [...weights],
+    fontSizes: [...sizes].slice(0, 20), radii: [...radii].slice(0, 20),
+    shadows: [...shadows].slice(0, 10), title, metaDesc, bodyText, h1s: h1s.slice(0, 5), pageUrl: url,
   }
 }
 
-// ─── Crawl internal pages (brand websites only, sequential, time-gated) ────────
-const INTERNAL_PATHS = ['/about', '/work', '/projects', '/pricing']
-
-async function crawlInternalPages(baseUrl) {
-  const results = []
-  const origin = new URL(baseUrl).origin
-  const deadline = Date.now() + 20000 // 20s budget for crawling
-
-  for (const path of INTERNAL_PATHS.slice(0, 2)) {
-    if (Date.now() > deadline) break
-    try {
-      const data = await extractBrandStyles(origin + path)
-      results.push(data)
-    } catch { /* skip missing pages */ }
-  }
-  return results
-}
-
-// ─── Claude: brand website CSS data → design system JSON ──────────────────────
+// ─── Claude prompts ────────────────────────────────────────────────────────────
 async function analyzeBrandWebsite(scrapedData, url) {
-  if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not set')
+  if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY environment variable is not set')
 
-  const prompt = `You are a senior design systems analyst. You have CSS token data scraped from: ${url}
+  const prompt = `You are a senior design systems analyst. CSS token data scraped from: ${url}
 
 This is the brand's OWN website CSS — not a third-party platform.
 
-SCRAPED DATA:
+DATA:
 ${JSON.stringify(scrapedData, null, 2)}
 
-Instructions:
-- cssVars: CSS custom properties — most reliable token source, use these first
-- colors: hex/rgb values found in CSS — identify which are brand vs text vs background
-- fonts: font families actually used (ignore system fallbacks like Arial, sans-serif)
-- radii: border-radius values from buttons, cards, inputs
-- shadows: box-shadow values found
-- h1s + bodyText: gives brand context and copy voice
-- Ignore browser-default colors like pure #000000 from resets unless clearly intentional
+Notes:
+- cssVars = CSS custom properties — most reliable, prioritize these
+- colors = hex values from CSS — distinguish brand/action vs text vs background
+- fonts = font families in use (generic fallbacks already filtered out)
+- radii = border-radius values from interactive elements
+- shadows = box-shadow values
+- Ignore browser reset defaults like pure #000/#fff unless clearly intentional brand usage
+- Infer brand name from title, domain, or bodyText
 
-Return ONLY valid JSON, zero markdown, zero preamble:
+Return ONLY valid JSON. No markdown. No explanation. No preamble:
 
 {
   "brand": {
-    "name": "infer from title/domain/bodyText",
+    "name": "brand name",
     "url": "${url}",
     "type": "website",
-    "atmosphere": "2-3 sentences on visual atmosphere inferred from tokens"
+    "atmosphere": "2-3 sentences describing visual atmosphere from the token data"
   },
   "colors": {
-    "primary": "main brand/action hex",
-    "canvas": "background hex",
-    "ink": "primary text hex",
-    "accent": "secondary accent hex if distinct",
-    "secondary": "muted text hex",
-    "border": "border/divider hex",
-    "surface": "card/panel hex",
-    "others": ["up to 4 other notable hex values"]
+    "primary": "#hex",
+    "canvas": "#hex",
+    "ink": "#hex",
+    "accent": "#hex",
+    "secondary": "#hex",
+    "border": "#hex",
+    "surface": "#hex",
+    "others": ["#hex", "#hex"]
   },
   "typography": {
-    "displayFamily": "headline font name",
-    "bodyFamily": "body font name",
-    "displayWeight": "number",
-    "bodyWeight": "number",
-    "displaySize": "largest px size found",
-    "bodySize": "body px size",
-    "tracking": "describe letter-spacing approach",
-    "notes": "other notable type decisions"
+    "displayFamily": "font name",
+    "bodyFamily": "font name",
+    "displayWeight": "700",
+    "bodyWeight": "400",
+    "displaySize": "48px",
+    "bodySize": "16px",
+    "tracking": "description of letter-spacing approach",
+    "notes": "other type observations"
   },
   "spacing": {
-    "baseUnit": "base spacing unit",
-    "sectionPadding": "section vertical padding",
-    "cardPadding": "card internal padding",
-    "density": "compact or balanced or generous"
+    "baseUnit": "8px",
+    "sectionPadding": "96px",
+    "cardPadding": "24px",
+    "density": "balanced"
   },
   "shape": {
-    "buttonRadius": "button radius from data",
-    "cardRadius": "card radius from data",
-    "philosophy": "pill or tight or sharp or binary"
+    "buttonRadius": "6px",
+    "cardRadius": "12px",
+    "philosophy": "tight"
   },
   "elevation": {
-    "shadowStyle": "none or single-tier or layered or surface-contrast",
-    "definition": "actual box-shadow value from data or empty string"
+    "shadowStyle": "single-tier",
+    "definition": "box-shadow value or empty string"
   },
   "voice": {
-    "canvasTemperature": "dark or light or warm-light",
-    "brandPersonality": "3 adjectives",
-    "antiPatterns": ["3-5 things absent/avoided based on what's not in the data"],
-    "signature": "single most distinctive visual element"
+    "canvasTemperature": "dark",
+    "brandPersonality": "precise, technical, confident",
+    "antiPatterns": ["thing 1", "thing 2", "thing 3"],
+    "signature": "the single most distinctive visual element"
   },
-  "principles": ["5-8 transferable design principles, each a full sentence"],
+  "principles": [
+    "Principle sentence 1.",
+    "Principle sentence 2.",
+    "Principle sentence 3.",
+    "Principle sentence 4.",
+    "Principle sentence 5."
+  ],
   "tokens": {
-    "css": ":root {\n  --primary: #hex;\n  --canvas: #hex;\n  --ink: #hex;\n  --accent: #hex;\n  --border: #hex;\n  --surface: #hex;\n  --font-display: 'Name';\n  --font-body: 'Name';\n  --radius-button: Xpx;\n  --radius-card: Xpx;\n}"
+    "css": ":root {\n  --primary: #hex;\n  --canvas: #hex;\n  --ink: #hex;\n  --accent: #hex;\n  --border: #hex;\n  --surface: #hex;\n  --font-display: 'Name';\n  --font-body: 'Name';\n  --radius-button: 6px;\n  --radius-card: 12px;\n}"
   }
 }`
 
   return callClaude(prompt, false, null)
 }
 
-// ─── Claude: screenshot → design system JSON (Vision) ─────────────────────────
-async function analyzeVisualScreenshot(screenshotData, url, urlTypeInfo) {
-  if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not set')
+async function analyzeVisualScreenshot(base64Screenshot, pageContext, url, urlTypeInfo) {
+  if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY environment variable is not set')
 
-  const { base64Screenshot, pageContext } = screenshotData
   const platform = urlTypeInfo.platform === 'behance' ? 'Behance' : 'Dribbble'
   const contentType = urlTypeInfo.type.includes('profile') ? 'portfolio profile' : 'design project'
 
-  const prompt = `You are a senior design systems analyst looking at a screenshot of a ${platform} ${contentType}.
+  const prompt = `You are a senior design systems analyst. You see a ${platform} ${contentType} screenshot.
 
-CRITICAL: Analyze ONLY the designer's WORK visible in the screenshot.
-DO NOT analyze ${platform}'s own UI (their nav bar, their background, their buttons, their layout chrome).
-Focus entirely on the design work/portfolio pieces being showcased.
+CRITICAL RULE: Analyze ONLY the design WORK visible in the screenshot.
+IGNORE ${platform}'s own UI entirely — their nav, background, buttons, chrome.
+Focus on the portfolio pieces, project imagery, and compositions being showcased.
 
 Page title: ${pageContext.title}
-Context: ${pageContext.bodyText.slice(0, 400)}
+Context text: ${pageContext.bodyText.slice(0, 400)}
 URL: ${url}
 
-From the visual work shown in the screenshot, extract:
-- Color palette used IN the designs (ignore ${platform}'s grey/white UI shell)
-- Typography style visible IN the work
-- Layout, spacing and composition approach
-- Visual aesthetic and style fingerprint
-
-Return ONLY valid JSON, zero markdown, zero preamble:
+Return ONLY valid JSON. No markdown. No explanation. No preamble.
+For any field where you genuinely cannot determine a value from the work shown, use null — do NOT use strings like "unknown" or "unavailable":
 
 {
   "brand": {
     "name": "designer or project name from title",
     "url": "${url}",
     "type": "${urlTypeInfo.type}",
-    "atmosphere": "2-3 sentences on this designer's visual style based on their work"
+    "atmosphere": "2-3 sentences describing this designer's visual style from their work"
   },
   "colors": {
-    "primary": "dominant color IN the work (hex estimate)",
-    "canvas": "background used in the work",
-    "ink": "text color in the work",
-    "accent": "accent color if present",
-    "secondary": "secondary color",
-    "border": "border/divider color if apparent",
-    "surface": "card/panel color if apparent",
-    "others": ["other notable colors in the work"]
+    "primary": "#hex dominant color in the work",
+    "canvas": "#hex background in the work",
+    "ink": "#hex text color in the work",
+    "accent": "#hex or null",
+    "secondary": "#hex or null",
+    "border": "#hex or null",
+    "surface": "#hex or null",
+    "others": ["#hex values from the work"]
   },
   "typography": {
-    "displayFamily": "headline font style (describe or name if visible)",
-    "bodyFamily": "body font style",
-    "displayWeight": "apparent weight",
-    "bodyWeight": "apparent weight",
-    "displaySize": "estimated px",
-    "bodySize": "estimated px",
+    "displayFamily": "font name if identifiable, else describe style",
+    "bodyFamily": "font name if identifiable, else describe style",
+    "displayWeight": "number or null",
+    "bodyWeight": "number or null",
+    "displaySize": "estimated px or null",
+    "bodySize": "estimated px or null",
     "tracking": "tight or loose or normal",
-    "notes": "type observations"
+    "notes": "type observations from the visible work"
   },
   "spacing": {
-    "baseUnit": "estimated",
-    "sectionPadding": "estimated",
-    "cardPadding": "estimated",
+    "baseUnit": "estimated or null",
+    "sectionPadding": "estimated or null",
+    "cardPadding": "estimated or null",
     "density": "compact or balanced or generous"
   },
   "shape": {
-    "buttonRadius": "from UI elements visible in work",
-    "cardRadius": "from containers in work",
+    "buttonRadius": "estimated from work or null",
+    "cardRadius": "estimated from work or null",
     "philosophy": "pill or tight or sharp or binary"
   },
   "elevation": {
@@ -373,20 +384,23 @@ Return ONLY valid JSON, zero markdown, zero preamble:
   },
   "voice": {
     "canvasTemperature": "dark or light or warm-light",
-    "brandPersonality": "3 adjectives for this designer's style",
+    "brandPersonality": "3 adjectives describing this designer's style",
     "antiPatterns": ["things absent from or avoided in this work"],
-    "signature": "single most distinctive visual element of this designer's style"
+    "signature": "single most distinctive visual element of this work"
   },
-  "principles": ["5-8 design principles apparent from this work"],
+  "principles": [
+    "5-8 design principles apparent from this designer's work, each a full sentence"
+  ],
   "tokens": {
-    "css": ":root {\n  /* Visual analysis estimates */\n  --primary: #hex;\n  --canvas: #hex;\n  --ink: #hex;\n}"
+    "css": ":root {\n  /* Estimated from visual analysis */\n  --primary: #hex;\n  --canvas: #hex;\n  --ink: #hex;\n}"
   }
 }`
 
-  return callClaude(prompt, true, base64Screenshot)
+  const designSystem = await callClaude(prompt, true, base64Screenshot)
+  return { designSystem, pagesScraped: 1, method: 'visual-analysis' }
 }
 
-// ─── Claude API (with optional Vision) ────────────────────────────────────────
+// ─── Claude API ────────────────────────────────────────────────────────────────
 async function callClaude(prompt, withImage, base64Image) {
   const content = withImage && base64Image
     ? [
@@ -423,7 +437,8 @@ async function callClaude(prompt, withImage, base64Image) {
   } catch {
     const match = clean.match(/\{[\s\S]*\}/)
     if (match) return JSON.parse(match[0])
-    throw new Error('Claude returned invalid JSON')
+    // For the vision check, return raw text so caller can handle it
+    return clean
   }
 }
 
@@ -439,30 +454,14 @@ export default async function handler(req, res) {
   try {
     const urlTypeInfo = getUrlType(url)
 
-    // ── Behance / Dribbble → screenshot + Vision ──────────────────────────────
     if (urlTypeInfo.platform === 'behance' || urlTypeInfo.platform === 'dribbble') {
-      const screenshotData = await screenshotAndAnalyze(url)
-      const designSystem = await analyzeVisualScreenshot(screenshotData, url, urlTypeInfo)
-      return res.status(200).json({ success: true, pagesScraped: 1, method: 'visual-analysis', designSystem })
+      const { designSystem, pagesScraped, method } = await handlePlatformUrl(url, urlTypeInfo)
+      return res.status(200).json({ success: true, pagesScraped, method, designSystem })
     }
 
-    // ── Brand website → CSS extraction ────────────────────────────────────────
-    const homepageData = await extractBrandStyles(url)
-    const internalPages = await crawlInternalPages(url)
+    const { designSystem, pagesScraped, method } = await handleWebsiteUrl(url)
+    return res.status(200).json({ success: true, pagesScraped, method, designSystem })
 
-    const allData = {
-      homepage: homepageData,
-      internalPages,
-      pagesScraped: 1 + internalPages.length,
-    }
-
-    const designSystem = await analyzeBrandWebsite(allData, url)
-    return res.status(200).json({
-      success: true,
-      pagesScraped: allData.pagesScraped,
-      method: 'css-extraction',
-      designSystem,
-    })
   } catch (err) {
     console.error('DECODE error:', err)
     return res.status(500).json({ error: err.message || 'Analysis failed' })
