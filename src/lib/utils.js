@@ -12,33 +12,74 @@ export function normalizeUrl(input) {
 
 export function getDomain(url) {
   try {
-    const parsed = new URL(url)
-    return parsed.hostname.replace(/^www\./, '')
+    const { hostname } = new URL(url)
+    return hostname.replace(/^www\./, '')
   } catch {
     return url
   }
 }
 
 export function getBrandName(url) {
-  const domain = getDomain(url)
-  // Handle known platforms
-  if (domain.includes('behance.net')) {
-    const parts = url.split('/').filter(Boolean)
-    return parts[parts.length - 1] || 'Behance Profile'
+  try {
+    const { hostname, pathname } = new URL(url)
+    const host = hostname.replace(/^www\./, '')
+    const parts = pathname.split('/').filter(Boolean)
+
+    if (host === 'behance.net' || host.endsWith('.behance.net')) {
+      if (parts[0] === 'gallery') {
+        // /gallery/ID/ProjectTitle — use project title (last segment)
+        return parts[2] ? decodeURIComponent(parts[2]).replace(/-/g, ' ') : 'Behance Project'
+      }
+      // /username — use username
+      return parts[0] ? `@${parts[0]}` : 'Behance Profile'
+    }
+
+    if (host === 'dribbble.com' || host.endsWith('.dribbble.com')) {
+      if (parts[0] === 'shots') {
+        // /shots/ID-slug — use slug
+        const slug = parts[1] ? parts[1].replace(/^\d+-/, '').replace(/-/g, ' ') : ''
+        return slug || 'Dribbble Shot'
+      }
+      // /username
+      return parts[0] ? `@${parts[0]}` : 'Dribbble Profile'
+    }
+
+    // Regular domain — capitalize domain name
+    const name = host.split('.')[0]
+    return name.charAt(0).toUpperCase() + name.slice(1)
+  } catch {
+    return url
   }
-  if (domain.includes('dribbble.com')) {
-    const parts = url.split('/').filter(Boolean)
-    return parts[parts.length - 1] || 'Dribbble Profile'
-  }
-  // Regular brand — use domain name
-  return domain.split('.')[0].charAt(0).toUpperCase() + domain.split('.')[0].slice(1)
 }
 
 export function getSourceType(url) {
-  const domain = getDomain(url)
-  if (domain.includes('behance.net')) return 'behance'
-  if (domain.includes('dribbble.com')) return 'dribbble'
-  return 'website'
+  try {
+    const { hostname, pathname } = new URL(url)
+    const host = hostname.replace(/^www\./, '')
+    const parts = pathname.split('/').filter(Boolean)
+
+    if (host === 'behance.net' || host.endsWith('.behance.net')) {
+      return parts[0] === 'gallery' ? 'behance-project' : 'behance-profile'
+    }
+    if (host === 'dribbble.com' || host.endsWith('.dribbble.com')) {
+      return parts[0] === 'shots' ? 'dribbble-shot' : 'dribbble-profile'
+    }
+    return 'website'
+  } catch {
+    return 'website'
+  }
+}
+
+// Label shown in UI for source type
+export function getSourceLabel(type) {
+  const labels = {
+    'website': 'Website',
+    'behance-project': 'Behance Project',
+    'behance-profile': 'Behance Profile',
+    'dribbble-shot': 'Dribbble Shot',
+    'dribbble-profile': 'Dribbble Profile',
+  }
+  return labels[type] || 'Website'
 }
 
 export function formatDate(iso) {

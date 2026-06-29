@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Trash2, ExternalLink, Clock } from 'lucide-react'
-import { getDomain, formatDate, formatTime } from '../lib/utils'
+import { getDomain, formatDate, formatTime, getSourceLabel, getSourceType } from '../lib/utils'
 
 export default function HistoryPanel({ history, onClose, onSelect, onDelete, onClear }) {
   return (

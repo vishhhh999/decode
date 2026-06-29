@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Copy, Check, Download, ChevronDown, ChevronUp, ExternalLink, RefreshCw } from 'lucide-react'
 import ColorSwatch from './ColorSwatch'
-import { getDomain, formatDate, formatTime } from '../lib/utils'
+import { getDomain, getSourceLabel, getSourceType } from '../lib/utils'
 
 const SECTION_ORDER = ['colors', 'typography', 'shape', 'spacing', 'elevation', 'voice', 'principles', 'tokens']
 
@@ -93,11 +93,33 @@ export default function AnalysisResult({ result, url, onReset, onReAnalyze }) {
           </p>
           <div style={{
             marginTop: '8px',
-            fontSize: '11px',
-            color: 'var(--text-tertiary)',
-            fontFamily: 'var(--font-mono)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            flexWrap: 'wrap',
           }}>
-            {result.pagesScraped} pages scraped
+            <span style={{
+              fontSize: '10px',
+              color: 'var(--text-tertiary)',
+              fontFamily: 'var(--font-mono)',
+              padding: '2px 6px',
+              border: '1px solid var(--border)',
+              borderRadius: '3px',
+              background: 'var(--bg-elevated)',
+            }}>
+              {getSourceLabel(getSourceType(url))}
+            </span>
+            <span style={{
+              fontSize: '10px',
+              color: result.method === 'visual-analysis' ? 'var(--accent)' : 'var(--text-tertiary)',
+              fontFamily: 'var(--font-mono)',
+              padding: '2px 6px',
+              border: `1px solid ${result.method === 'visual-analysis' ? 'var(--accent-border)' : 'var(--border)'}`,
+              borderRadius: '3px',
+              background: result.method === 'visual-analysis' ? 'var(--accent-dim)' : 'var(--bg-elevated)',
+            }}>
+              {result.method === 'visual-analysis' ? '✦ visual analysis' : `${result.pagesScraped} pages scraped`}
+            </span>
           </div>
         </div>
 
