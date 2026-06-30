@@ -195,6 +195,24 @@ export default function HistoryPanel({ history, onClose, onSelect, onDelete, onC
                       {getDomain(entry.url)}
                     </div>
 
+                    {entry.designSystem?.brand?.industryTags?.length > 0 && (
+                      <div style={{
+                        display: 'flex', gap: '4px', flexWrap: 'wrap',
+                        marginTop: '6px',
+                      }}>
+                        {entry.designSystem.brand.industryTags.slice(0, 2).map((tag, ti) => (
+                          <span key={ti} style={{
+                            fontSize: '9px',
+                            color: 'var(--text-tertiary)',
+                            fontFamily: 'var(--font-mono)',
+                            padding: '1px 5px',
+                            border: '1px solid var(--border)',
+                            borderRadius: '2px',
+                          }}>{tag}</span>
+                        ))}
+                      </div>
+                    )}
+
                     <div style={{
                       fontSize: '10px',
                       color: 'var(--text-tertiary)',

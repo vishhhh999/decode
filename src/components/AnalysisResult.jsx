@@ -1,13 +1,12 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Copy, Check, Download, ChevronDown, ChevronUp, ExternalLink, RefreshCw } from 'lucide-react'
+import { Copy, Check, Download, ChevronDown, ChevronUp, ExternalLink, RefreshCw, Lightbulb, AlertTriangle } from 'lucide-react'
 import ColorSwatch from './ColorSwatch'
 import { getDomain, getSourceLabel, getSourceType } from '../lib/utils'
-
-const SECTION_ORDER = ['colors', 'typography', 'shape', 'spacing', 'elevation', 'voice', 'principles', 'tokens']
+import { generateMarkdown, generateFallbackCSS } from '../lib/markdownGenerator'
 
 export default function AnalysisResult({ result, url, onReset, onReAnalyze }) {
-  const [openSections, setOpenSections] = useState(new Set(['colors', 'typography', 'voice', 'principles']))
+  const [openSections, setOpenSections] = useState(new Set(['philosophy', 'colors', 'typography', 'components', 'voice', 'principles']))
   const [copiedTokens, setCopiedTokens] = useState(false)
 
   const ds = result.designSystem
@@ -22,7 +21,7 @@ export default function AnalysisResult({ result, url, onReset, onReAnalyze }) {
   }
 
   function copyTokens() {
-    const css = ds.tokens?.css || generateCSS(ds)
+    const css = ds.tokens?.css || generateFallbackCSS(ds)
     navigator.clipboard.writeText(css).then(() => {
       setCopiedTokens(true)
       setTimeout(() => setCopiedTokens(false), 2000)
@@ -30,7 +29,7 @@ export default function AnalysisResult({ result, url, onReset, onReAnalyze }) {
   }
 
   function downloadMd() {
-    const md = generateMarkdown(ds, url)
+    const md = generateMarkdown(ds, url, { pagesScraped: result.pagesScraped })
     const blob = new Blob([md], { type: 'text/markdown' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
@@ -38,19 +37,21 @@ export default function AnalysisResult({ result, url, onReset, onReAnalyze }) {
     a.click()
   }
 
+  const isPortfolio = ds.brand?.siteType === 'designer-portfolio'
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 24 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-      style={{ width: '100%', maxWidth: '720px', margin: '0 auto', paddingBottom: '80px' }}
+      style={{ width: '100%', maxWidth: '760px', margin: '0 auto', paddingBottom: '80px' }}
     >
       {/* Header */}
       <div style={{
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'space-between',
-        marginBottom: '32px',
+        marginBottom: '28px',
         gap: '16px',
       }}>
         <div>
@@ -86,40 +87,35 @@ export default function AnalysisResult({ result, url, onReset, onReAnalyze }) {
           <p style={{
             fontSize: '13px',
             color: 'var(--text-secondary)',
-            maxWidth: '500px',
+            maxWidth: '540px',
             lineHeight: 1.6,
           }}>
             {ds.brand?.atmosphere}
           </p>
+
+          {/* Badge row */}
           <div style={{
-            marginTop: '8px',
+            marginTop: '10px',
             display: 'flex',
             alignItems: 'center',
-            gap: '8px',
+            gap: '6px',
             flexWrap: 'wrap',
           }}>
-            <span style={{
-              fontSize: '10px',
-              color: 'var(--text-tertiary)',
-              fontFamily: 'var(--font-mono)',
-              padding: '2px 6px',
-              border: '1px solid var(--border)',
-              borderRadius: '3px',
-              background: 'var(--bg-elevated)',
-            }}>
-              {getSourceLabel(getSourceType(url))}
-            </span>
-            <span style={{
-              fontSize: '10px',
-              color: result.method === 'visual-analysis' ? 'var(--accent)' : 'var(--text-tertiary)',
-              fontFamily: 'var(--font-mono)',
-              padding: '2px 6px',
-              border: `1px solid ${result.method === 'visual-analysis' ? 'var(--accent-border)' : 'var(--border)'}`,
-              borderRadius: '3px',
-              background: result.method === 'visual-analysis' ? 'var(--accent-dim)' : 'var(--bg-elevated)',
-            }}>
-              {result.method === 'visual-analysis' ? '✦ visual analysis' : `${result.pagesScraped} pages scraped`}
-            </span>
+            <Badge label={getSourceLabel(getSourceType(url))} />
+            <Badge
+              label={isPortfolio ? '◆ designer portfolio' : '◆ brand website'}
+              accent
+            />
+            <Badge
+              label={result.method === 'visual-analysis'
+                ? '✦ visual analysis'
+                : result.method === 'visual+css-extraction'
+                ? `✦ visual + ${result.pagesScraped} pages`
+                : `${result.pagesScraped} pages scraped`}
+            />
+            {ds.brand?.industryTags?.map((tag, i) => (
+              <Badge key={i} label={tag} subtle />
+            ))}
           </div>
         </div>
 
@@ -134,28 +130,58 @@ export default function AnalysisResult({ result, url, onReset, onReAnalyze }) {
       {/* Sections */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
 
+        {/* Design Philosophy */}
+        {(ds.designPhilosophy?.coreIdea || ds.designPhilosophy?.positioningSignal) && (
+          <Section id="philosophy" label="Design Philosophy" icon={<Lightbulb size={13} strokeWidth={1.5} />} open={openSections.has('philosophy')} onToggle={toggleSection}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {ds.designPhilosophy.coreIdea && (
+                <div>
+                  <div style={{ fontSize: '11px', color: 'var(--accent)', marginBottom: '6px', fontFamily: 'var(--font-mono)' }}>CORE IDEA</div>
+                  <p style={{ fontSize: '14px', color: 'var(--text-primary)', lineHeight: 1.7 }}>{ds.designPhilosophy.coreIdea}</p>
+                </div>
+              )}
+              {ds.designPhilosophy.positioningSignal && (
+                <div>
+                  <div style={{ fontSize: '11px', color: 'var(--accent)', marginBottom: '6px', fontFamily: 'var(--font-mono)' }}>POSITIONING SIGNAL</div>
+                  <p style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.7 }}>{ds.designPhilosophy.positioningSignal}</p>
+                </div>
+              )}
+            </div>
+          </Section>
+        )}
+
         {/* Colors */}
         <Section id="colors" label="Colors" open={openSections.has('colors')} onToggle={toggleSection}>
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))',
-            gap: '16px',
-          }}>
-            {Object.entries(ds.colors || {}).filter(([k]) => k !== 'others').map(([key, val]) => (
-              <ColorSwatch key={key} label={key} value={val} />
-            ))}
-            {ds.colors?.others?.slice(0, 6).map((c, i) => (
-              <ColorSwatch key={i} label={`other-${i+1}`} value={c} />
-            ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))',
+              gap: '16px',
+            }}>
+              {Object.entries(ds.colors || {}).filter(([k]) => !['others', 'reasoning'].includes(k)).map(([key, val]) => (
+                <ColorSwatch key={key} label={key} value={val} />
+              ))}
+              {ds.colors?.others?.slice(0, 6).map((c, i) => (
+                <ColorSwatch key={i} label={`other-${i+1}`} value={c} />
+              ))}
+            </div>
+            {ds.colors?.reasoning && (
+              <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6, paddingTop: '4px', borderTop: '1px solid var(--border)' }}>
+                {ds.colors.reasoning}
+              </p>
+            )}
           </div>
         </Section>
 
         {/* Typography */}
         <Section id="typography" label="Typography" open={openSections.has('typography')} onToggle={toggleSection}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <TypeRow label="Display" value={ds.typography?.displayFamily} sub={`${ds.typography?.displaySize} / ${ds.typography?.displayWeight}`} />
-            <TypeRow label="Body" value={ds.typography?.bodyFamily} sub={`${ds.typography?.bodySize} / ${ds.typography?.bodyWeight}`} />
+            <TypeRow label="Display" value={ds.typography?.displayFamily} sub={`${ds.typography?.displaySize || ''} / ${ds.typography?.displayWeight || ''}`} />
+            <TypeRow label="Body" value={ds.typography?.bodyFamily} sub={`${ds.typography?.bodySize || ''} / ${ds.typography?.bodyWeight || ''}`} />
             <MetaRow label="Tracking" value={ds.typography?.tracking} />
+            {ds.typography?.weightContrastStrategy && (
+              <MetaRow label="Weight strategy" value={ds.typography.weightContrastStrategy} />
+            )}
             {ds.typography?.notes && <MetaRow label="Notes" value={ds.typography.notes} />}
           </div>
         </Section>
@@ -168,6 +194,11 @@ export default function AnalysisResult({ result, url, onReset, onReAnalyze }) {
               <RadiusSwatch label="Card" value={ds.shape?.cardRadius} />
             </div>
             <MetaRow label="Philosophy" value={ds.shape?.philosophy} />
+            {ds.shape?.reasoning && (
+              <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6, paddingTop: '8px', borderTop: '1px solid var(--border)' }}>
+                {ds.shape.reasoning}
+              </p>
+            )}
           </div>
         </Section>
 
@@ -178,32 +209,82 @@ export default function AnalysisResult({ result, url, onReset, onReAnalyze }) {
             <MetaRow label="Section padding" value={ds.spacing?.sectionPadding} />
             <MetaRow label="Card padding" value={ds.spacing?.cardPadding} />
             <MetaRow label="Density" value={ds.spacing?.density} />
+            {ds.spacing?.reasoning && (
+              <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6, paddingTop: '8px', borderTop: '1px solid var(--border)' }}>
+                {ds.spacing.reasoning}
+              </p>
+            )}
           </div>
         </Section>
 
         {/* Elevation */}
-        <Section id="elevation" label="Elevation" open={openSections.has('elevation')} onToggle={toggleSection}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <MetaRow label="Style" value={ds.elevation?.shadowStyle} />
-            {ds.elevation?.definition && (
-              <div>
-                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>Shadow definition</div>
-                <code style={{
-                  display: 'block',
-                  padding: '10px 12px',
-                  background: 'var(--bg-elevated)',
-                  borderRadius: 'var(--radius-md)',
-                  fontSize: '11px',
-                  fontFamily: 'var(--font-mono)',
-                  color: 'var(--accent)',
-                  wordBreak: 'break-all',
-                }}>
-                  {ds.elevation.definition}
-                </code>
-              </div>
-            )}
-          </div>
-        </Section>
+        {ds.elevation?.shadowStyle && (
+          <Section id="elevation" label="Elevation" open={openSections.has('elevation')} onToggle={toggleSection}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <MetaRow label="Style" value={ds.elevation?.shadowStyle} />
+              {ds.elevation?.definition && (
+                <div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>Shadow definition</div>
+                  <code style={{
+                    display: 'block',
+                    padding: '10px 12px',
+                    background: 'var(--bg-elevated)',
+                    borderRadius: 'var(--radius-md)',
+                    fontSize: '11px',
+                    fontFamily: 'var(--font-mono)',
+                    color: 'var(--accent)',
+                    wordBreak: 'break-all',
+                  }}>
+                    {ds.elevation.definition}
+                  </code>
+                </div>
+              )}
+              {ds.elevation?.reasoning && (
+                <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6, paddingTop: '4px' }}>
+                  {ds.elevation.reasoning}
+                </p>
+              )}
+            </div>
+          </Section>
+        )}
+
+        {/* Components */}
+        {ds.components?.length > 0 && (
+          <Section id="components" label={`Components (${ds.components.length})`} open={openSections.has('components')} onToggle={toggleSection}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {ds.components.map((c, i) => (
+                <motion.div
+                  key={i}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.04 }}
+                  style={{
+                    padding: '14px',
+                    borderRadius: 'var(--radius-md)',
+                    background: 'var(--bg-elevated)',
+                    border: '1px solid var(--border)',
+                  }}
+                >
+                  <code style={{
+                    display: 'inline-block',
+                    fontSize: '12px',
+                    fontFamily: 'var(--font-mono)',
+                    color: 'var(--accent)',
+                    background: 'var(--accent-dim)',
+                    padding: '2px 8px',
+                    borderRadius: 'var(--radius-sm)',
+                    marginBottom: '8px',
+                  }}>
+                    {c.name}
+                  </code>
+                  <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                    {c.description}
+                  </p>
+                </motion.div>
+              ))}
+            </div>
+          </Section>
+        )}
 
         {/* Voice */}
         <Section id="voice" label="Brand Voice" open={openSections.has('voice')} onToggle={toggleSection}>
@@ -213,7 +294,7 @@ export default function AnalysisResult({ result, url, onReset, onReAnalyze }) {
             <MetaRow label="Signature" value={ds.voice?.signature} accent />
             {ds.voice?.antiPatterns?.length > 0 && (
               <div>
-                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>Anti-patterns</div>
+                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>What this system avoids</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   {ds.voice.antiPatterns.map((p, i) => (
                     <div key={i} style={{
@@ -265,6 +346,26 @@ export default function AnalysisResult({ result, url, onReset, onReAnalyze }) {
           </div>
         </Section>
 
+        {/* Known Gaps */}
+        {ds.knownGaps?.length > 0 && (
+          <Section id="gaps" label="Known Gaps" icon={<AlertTriangle size={12} strokeWidth={1.5} />} open={openSections.has('gaps')} onToggle={toggleSection}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '4px' }}>
+                Honest limitations of this analysis:
+              </p>
+              {ds.knownGaps.map((g, i) => (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'flex-start', gap: '8px',
+                  fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6,
+                }}>
+                  <span style={{ color: 'var(--warning)', flexShrink: 0, marginTop: '2px' }}>!</span>
+                  {g}
+                </div>
+              ))}
+            </div>
+          </Section>
+        )}
+
         {/* CSS Tokens */}
         <Section id="tokens" label="CSS Tokens" open={openSections.has('tokens')} onToggle={toggleSection}>
           <div style={{ position: 'relative' }}>
@@ -304,7 +405,7 @@ export default function AnalysisResult({ result, url, onReset, onReAnalyze }) {
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-all',
             }}>
-              {ds.tokens?.css || generateCSS(ds)}
+              {ds.tokens?.css || generateFallbackCSS(ds)}
             </pre>
           </div>
         </Section>
@@ -349,9 +450,26 @@ export default function AnalysisResult({ result, url, onReset, onReAnalyze }) {
   )
 }
 
-// Sub-components
+// ─── Sub-components ────────────────────────────────────────────────────────────
 
-function Section({ id, label, open, onToggle, children }) {
+function Badge({ label, accent, subtle }) {
+  return (
+    <span style={{
+      fontSize: '10px',
+      color: accent ? 'var(--accent)' : subtle ? 'var(--text-tertiary)' : 'var(--text-tertiary)',
+      fontFamily: 'var(--font-mono)',
+      padding: '2px 7px',
+      border: `1px solid ${accent ? 'var(--accent-border)' : 'var(--border)'}`,
+      borderRadius: '3px',
+      background: accent ? 'var(--accent-dim)' : 'var(--bg-elevated)',
+      whiteSpace: 'nowrap',
+    }}>
+      {label}
+    </span>
+  )
+}
+
+function Section({ id, label, icon, open, onToggle, children }) {
   return (
     <div style={{
       borderRadius: 'var(--radius-lg)',
@@ -376,12 +494,14 @@ function Section({ id, label, open, onToggle, children }) {
         onMouseLeave={e => e.currentTarget.style.background = 'none'}
       >
         <span style={{
+          display: 'flex', alignItems: 'center', gap: '8px',
           fontFamily: 'var(--font-display)',
           fontSize: '13px',
           fontWeight: 600,
           letterSpacing: '0.01em',
           color: 'var(--text-primary)',
         }}>
+          {icon && <span style={{ color: 'var(--accent)' }}>{icon}</span>}
           {label}
         </span>
         <span style={{ color: 'var(--text-tertiary)' }}>
@@ -489,82 +609,4 @@ function ActionBtn({ onClick, icon, label, accent }) {
       {label}
     </button>
   )
-}
-
-// Helpers
-
-function generateCSS(ds) {
-  if (!ds) return ''
-  const lines = [':root {']
-  const c = ds.colors || {}
-  if (c.canvas) lines.push(`  --canvas: ${c.canvas};`)
-  if (c.primary) lines.push(`  --primary: ${c.primary};`)
-  if (c.ink) lines.push(`  --ink: ${c.ink};`)
-  if (c.accent) lines.push(`  --accent: ${c.accent};`)
-  if (c.secondary) lines.push(`  --secondary: ${c.secondary};`)
-  if (c.border) lines.push(`  --border: ${c.border};`)
-  if (c.surface) lines.push(`  --surface: ${c.surface};`)
-  const t = ds.typography || {}
-  if (t.displayFamily) lines.push(`  --font-display: ${t.displayFamily};`)
-  if (t.bodyFamily) lines.push(`  --font-body: ${t.bodyFamily};`)
-  const s = ds.shape || {}
-  if (s.buttonRadius) lines.push(`  --radius-button: ${s.buttonRadius};`)
-  if (s.cardRadius) lines.push(`  --radius-card: ${s.cardRadius};`)
-  lines.push('}')
-  return lines.join('\n')
-}
-
-function generateMarkdown(ds, url) {
-  return `# Design System — ${ds.brand?.name || url}
-
-## Overview
-${ds.brand?.atmosphere || ''}
-
-**URL:** ${url}
-**Type:** ${ds.brand?.type || 'website'}
-
-## Colors
-
-| Role | Value |
-|------|-------|
-${Object.entries(ds.colors || {}).filter(([k]) => k !== 'others').map(([k,v]) => `| ${k} | \`${v}\` |`).join('\n')}
-
-## Typography
-
-- **Display:** ${ds.typography?.displayFamily} / ${ds.typography?.displaySize} / ${ds.typography?.displayWeight}
-- **Body:** ${ds.typography?.bodyFamily} / ${ds.typography?.bodySize} / ${ds.typography?.bodyWeight}
-- **Tracking:** ${ds.typography?.tracking}
-${ds.typography?.notes ? `- **Notes:** ${ds.typography.notes}` : ''}
-
-## Shape
-
-- **Button radius:** ${ds.shape?.buttonRadius}
-- **Card radius:** ${ds.shape?.cardRadius}
-- **Philosophy:** ${ds.shape?.philosophy}
-
-## Spacing
-
-- **Base unit:** ${ds.spacing?.baseUnit}
-- **Section padding:** ${ds.spacing?.sectionPadding}
-- **Density:** ${ds.spacing?.density}
-
-## Brand Voice
-
-- **Canvas:** ${ds.voice?.canvasTemperature}
-- **Personality:** ${ds.voice?.brandPersonality}
-- **Signature:** ${ds.voice?.signature}
-
-### Anti-patterns
-${(ds.voice?.antiPatterns || []).map(p => `- ${p}`).join('\n')}
-
-## Design Principles
-
-${(ds.principles || []).map((p, i) => `${i+1}. ${p}`).join('\n')}
-
-## CSS Tokens
-
-\`\`\`css
-${ds.tokens?.css || generateCSS(ds)}
-\`\`\`
-`
 }

@@ -4,13 +4,15 @@ import { getDomain } from '../lib/utils'
 
 const STAGES = [
   { id: 'connect',    label: 'Connecting to browser instance',      duration: 800  },
+  { id: 'screenshot', label: 'Capturing homepage screenshot',       duration: 2500 },
   { id: 'load',       label: 'Loading page',                         duration: 1200 },
   { id: 'css',        label: 'Extracting CSS variables',             duration: 900  },
   { id: 'colors',     label: 'Sampling color values',               duration: 700  },
   { id: 'typography', label: 'Mapping typography system',           duration: 800  },
-  { id: 'crawl',      label: 'Crawling internal pages',             duration: 1400 },
-  { id: 'components', label: 'Identifying component patterns',      duration: 900  },
-  { id: 'claude',     label: 'Generating design reasoning',         duration: 2000 },
+  { id: 'crawl',      label: 'Crawling internal pages',             duration: 2500 },
+  { id: 'components', label: 'Identifying component patterns',      duration: 1200 },
+  { id: 'philosophy', label: 'Reasoning about design intent',       duration: 1800 },
+  { id: 'claude',     label: 'Generating deep design analysis',     duration: 3500 },
   { id: 'done',       label: 'Analysis complete',                   duration: 400  },
 ]
 
@@ -182,7 +184,7 @@ export default function AnalysisProgress({ url, pagesScraped }) {
         color: 'var(--text-tertiary)',
         fontFamily: 'var(--font-mono)',
       }}>
-        This takes 20–40 seconds
+        This takes 30–50 seconds — DECODE is reading the actual page, not guessing
       </p>
     </motion.div>
   )
