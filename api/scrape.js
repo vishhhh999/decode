@@ -60,25 +60,40 @@ function makeScreenshotBody(url) {
   return {
     url,
     addScriptTag: [STEALTH_SCRIPT],
-    gotoOptions: { waitUntil: 'networkidle2', timeout: 25000 },
-    waitForTimeout: 3000,
+    gotoOptions: { waitUntil: 'networkidle2', timeout: 30000 },
+    waitForTimeout: 5000, // longer wait — gives SPA bot-checks/lazy content time to resolve
     viewport: { width: 1440, height: 900, deviceScaleFactor: 1 },
   }
 }
 
 // ─── Behance / Dribbble: screenshot → validate → Claude Vision ───────────────
 async function handlePlatformUrl(url, urlTypeInfo) {
-  // 1. Screenshot
-  const ssRes = await blFetch('screenshot', makeScreenshotBody(url))
-  const ssBuffer = await ssRes.arrayBuffer()
+  // 1. Screenshot — longer wait to let SPA content render past any bot-check interstitial
+  let ssBuffer
+  try {
+    const ssRes = await blFetch('screenshot', makeScreenshotBody(url))
+    ssBuffer = await ssRes.arrayBuffer()
+  } catch (err) {
+    // Browserless itself returned non-200 — the page likely hard-blocked the request
+    const platform = urlTypeInfo.platform === 'behance' ? 'Behance' : 'Dribbble'
+    throw new Error(
+      `${platform} blocked this request at the network level (${err.message}). ` +
+      `${platform} runs bot-detection that can reject automated browsers regardless of which page is requested. ` +
+      `This is a known limitation — there is currently no reliable workaround for ${platform} specifically. ` +
+      `Try a brand website instead, which works reliably.`
+    )
+  }
+
   const bytes = ssBuffer.byteLength
 
-  // If image is tiny (<5KB) it's almost certainly an error/login page
-  if (bytes < 5000) {
+  // If image is tiny (<8KB) it's almost certainly an error/blank/login page
+  if (bytes < 8000) {
+    const platform = urlTypeInfo.platform === 'behance' ? 'Behance' : 'Dribbble'
     throw new Error(
-      `The page returned a blank or error screen (image too small: ${bytes} bytes). ` +
-      `This usually means the project is private, requires login, or the platform blocked access. ` +
-      `Try a public portfolio profile URL instead (e.g. behance.net/username).`
+      `${platform} returned a blank or error screen instead of the page content (${bytes} bytes received). ` +
+      `${platform} actively blocks automated browser access, even for public profile URLs. ` +
+      `This is a platform-side limitation, not a URL problem — there is currently no reliable workaround. ` +
+      `Try a brand website URL instead, which works reliably.`
     )
   }
 

@@ -26,8 +26,8 @@ export default function Hero({ onSubmit, isLoading }) {
   const examples = [
     'stripe.com',
     'framer.com',
-    'behance.net/username',
-    'dribbble.com/username',
+    'linear.app',
+    'notion.so',
   ]
 
   return (
